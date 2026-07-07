@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::format;
-use std::iter::Cycle;
 use std::process::Command;
 use std::sync::mpsc;
-use std::{thread, vec};
+use std::{thread};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +146,23 @@ impl BuildGraph {
                 None
         }
 
+
+        pub fn validate(&self) -> Result<(), BuildError> {
+                let mut visited = HashSet::new();
+                let mut visiting = HashSet::new();
+                let mut stack = Vec::new();
+
+                for index in 0..self.tasks.len() {
+                        if visited.contains(&index) {
+                                continue;
+                        }
+                        if let Some(cycle) = self.dfs(index, &mut visited, &mut visiting, &mut stack) {
+                                return Err(BuildError::CyclicDependency(cycle));
+                        } 
+                }
+
+                Ok(())
+        }
         pub fn run(&self) -> Result<(), BuildError> {
                 let mut graph = self.tasks.clone();
                 let worker_count = std::thread::available_parallelism().map_or(4, |n| n.get()).max(1);
@@ -227,6 +242,24 @@ impl BuildGraph {
                 Ok(())
         }
 }
+
+pub fn run_from_file(path : &str) -> Result<(), BuildError> {
+        let contents = std::fs::read_to_string(path).map_err(|err| BuildError::Parse(err.to_string()))?;
+        let graph = BuildGraph::from_config(&contents)?;
+        graph.validate()?;
+        graph.run()
+}
+
 fn main() {
-        
+        if let Some(path) = std::env::args().nth(1) {
+                match run_from_file(&path) {
+                        Ok(()) => {}
+                        Err(err) => {
+                                eprintln!("{err}");
+                                std::process::exit(1);
+                        }
+                }
+        } else {
+                println!("usage: cargo run -- <build-config>");
+        }
 }
