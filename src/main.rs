@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::format;
 use std::iter::Cycle;
 use std::process::Command;
 use std::sync::mpsc;
@@ -145,6 +146,85 @@ impl BuildGraph {
                 visited.insert(node);
                 visiting.remove(&node);
                 None
+        }
+
+        pub fn run(&self) -> Result<(), BuildError> {
+                let mut graph = self.tasks.clone();
+                let worker_count = std::thread::available_parallelism().map_or(4, |n| n.get()).max(1);
+
+                let (result_tx, result_rx) = mpsc::channel();
+
+                let mut job_senders : Vec<mpsc::Sender<Job>> = Vec::with_capacity(worker_count);
+
+                for _ in 0..worker_count {
+                        let (job_tx, job_rx) = mpsc::channel();
+                        job_senders.push(job_tx);
+                        let result_tx = result_tx.clone();
+
+                        thread::spawn(move || loop {
+                                match job_rx.recv() {
+                                        Ok(job) => {
+                                                let status = Command::new("sh").arg("-c").arg(&job.command).status();
+                                                let outcome = match status {
+                                                        Ok(status) if status.success() => Ok(()),
+                                                        Ok(status) => Err(format!("exit code : {status}")),
+                                                        Err(err) => Err(err.to_string()),
+                                                };
+
+                                                let _ = result_tx.send((job.task_name, outcome));
+                                        },
+                                        Err(_) => break 
+                                }
+                        });
+                }
+
+                let mut completed = 0usize;
+                let mut next_worker = 0usize;
+
+                while completed < graph.len() {
+                    let ready: Vec<usize> = graph
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, task)| matches!(task.state, TaskState::Pending))
+                        .filter(|(idx, _)| {
+                            graph[*idx]
+                                .dependencies
+                                .iter()
+                                .all(|dep| graph[*dep].state == TaskState::Success)
+                        })
+                        .map(|(idx, _)| idx)
+                        .collect();
+        
+                    if ready.is_empty() && completed < graph.len() {
+                        return Err(BuildError::NoRunnableTasks(format!("{} tasks remain", graph.len() - completed)));
+                    }
+        
+                    for idx in ready {
+                        graph[idx].state = TaskState::Running;
+                        let task_name = graph[idx].name.clone();
+                        let command = graph[idx].command.clone();
+                        let sender = &job_senders[next_worker % job_senders.len()];
+                        sender
+                            .send(Job { task_name, command })
+                            .map_err(|_| BuildError::Parse("worker channel closed".to_string()))?;
+                        next_worker += 1;
+                    }
+        
+                    let (task_name, outcome) = result_rx
+                        .recv()
+                        .map_err(|_| BuildError::Parse("worker channel closed".to_string()))?;
+                    completed += 1;
+                    let target = graph.iter().position(|task| task.name == task_name).unwrap();
+                    match outcome {
+                        Ok(()) => graph[target].state = TaskState::Success,
+                        Err(message) => {
+                            graph[target].state = TaskState::Failed(message.clone());
+                            return Err(BuildError::TaskFailed(task_name));
+                        }
+                    }
+                }
+
+                Ok(())
         }
 }
 fn main() {
