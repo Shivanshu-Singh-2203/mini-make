@@ -3,6 +3,7 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::{thread};
 use serde::Deserialize;
+mod test;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskState {
@@ -210,10 +211,12 @@ impl BuildGraph {
                         .map(|(idx, _)| idx)
                         .collect();
         
-                    if ready.is_empty() && completed < graph.len() {
+                    let running_count = graph.iter().filter(|t| matches!(t.state, TaskState::Running)).count();
+                    
+                    if ready.is_empty() && running_count == 0 && completed < graph.len() {
                         return Err(BuildError::NoRunnableTasks(format!("{} tasks remain", graph.len() - completed)));
                     }
-        
+                    
                     for idx in ready {
                         graph[idx].state = TaskState::Running;
                         let task_name = graph[idx].name.clone();
@@ -251,15 +254,24 @@ pub fn run_from_file(path : &str) -> Result<(), BuildError> {
 }
 
 fn main() {
-        if let Some(path) = std::env::args().nth(1) {
-                match run_from_file(&path) {
-                        Ok(()) => {}
-                        Err(err) => {
-                                eprintln!("{err}");
-                                std::process::exit(1);
-                        }
+    if let Some(path) = std::env::args().nth(1) {
+        
+        if let Some(parent_dir) = std::path::Path::new(&path).parent() {
+                if parent_dir.exists() && parent_dir.is_dir() {
+                        let _ = std::env::set_current_dir(parent_dir);
                 }
-        } else {
-                println!("usage: cargo run -- <build-config>");
+        } 
+
+        let file_name = std::path::Path::new(&path).file_name().unwrap().to_str().unwrap();
+
+        match run_from_file(file_name) {
+                Ok(()) => {}
+                Err(err) => {
+                        eprintln!("{err}");
+                        std::process::exit(1);
+            }
         }
+    } else {
+        println!("usage: cargo run -- <build-config>");
+    }
 }
