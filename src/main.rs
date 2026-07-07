@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::iter::Cycle;
 use std::process::Command;
 use std::sync::mpsc;
 use std::{thread, vec};
@@ -63,6 +64,11 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
+struct Job {
+        task_name : String,
+        command : String,
+}
+
 impl BuildGraph {
         pub fn from_config(contents: &str) -> Result<Self, BuildError> {
             let config: ConfigFile = toml::from_str(contents).map_err(|err| BuildError::Parse(err.to_string()))?;
@@ -113,6 +119,32 @@ impl BuildGraph {
                 tasks: resolved,
                 name_to_index,
             })
+        }
+
+        fn dfs(&self, node : usize, visited : &mut HashSet<usize>, visiting : &mut HashSet<usize>, stack : &mut Vec<usize>) -> Option<String> {
+                if visiting.contains(&node) {
+                        let start = stack.iter().rposition(|item| *item == node).unwrap_or(0);
+                        let cycle = stack[start..].iter().map(|item| self.tasks[*item].name.clone()).collect::<Vec<_>>();
+                        return Some(cycle.join("->"));
+                }
+
+                if visited.contains(&node) {
+                    return None;
+                }
+
+                visiting.insert(node);
+                stack.push(node);
+
+                for dep in &self.tasks[node].dependencies {
+                        if let Some(cycle) = self.dfs(*dep, visited, visiting, stack) {
+                                return Some(cycle);
+                        }
+                }
+
+                stack.pop();
+                visited.insert(node);
+                visiting.remove(&node);
+                None
         }
 }
 fn main() {
